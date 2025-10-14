@@ -1,0 +1,221 @@
+---
+title: "payroll_vs_success_mlb"
+format: html
+editor: visual
+---
+
+## 
+
+```{r}
+library(Lahman)
+library(janitor)
+library(ggplot2)
+library(dplyr)
+```
+
+```{r}
+Teams <- Teams %>%
+  select(yearID, lgID, teamID, name, W, L, DivWin, WCWin, LgWin, WSWin) %>%
+  filter(yearID >= 1985) %>%
+  mutate(teamID = droplevels(teamID))
+
+```
+
+```{r}
+payroll <- Salaries %>%
+                group_by(teamID, yearID) %>%
+                summarise(payroll = sum(salary)/1000000)
+head(payroll)
+```
+
+```{r}
+Salaries %>% 
+  group_by(yearID) %>% 
+  summarise(min=min(salary),
+            max=max(salary))
+
+Salaries <- Salaries %>%
+    filter(salary !=0)
+```
+
+```{r}
+payroll <- Salaries %>%
+                group_by(teamID, yearID) %>%
+                summarise(payroll = sum(salary)/1000000)
+head(payroll)
+```
+
+```{r}
+payroll <- merge(payroll, Teams[,c("yearID", "teamID","name", "W", "L", "DivWin", "WCWin", "LgWin","WSWin")], 
+                 by=c("yearID", "teamID")) 
+```
+
+```{r}
+# Read the recent payroll data from CSV
+recent_data <- read.csv("mlb payroll - Sheet1.csv")
+
+# Clean and process the recent data
+recent_data_clean <- recent_data %>%
+  # Remove commas from payroll and convert to numeric
+  mutate(team_payroll_numeric = as.numeric(gsub(",", "", team.payroll))) %>%
+  # Convert team names to Lahman format team IDs
+  mutate(teamID = case_when(
+    team == "Arizona Diamondbacks" ~ "ARI",
+    team == "Atlanta Braves" ~ "ATL",
+    team == "Baltimore Orioles" ~ "BAL",
+    team == "Boston Red Sox" ~ "BOS",
+    team == "Chicago Cubs" ~ "CHN",
+    team == "Chicago White Sox" ~ "CHA",
+    team == "Cincinnati Reds" ~ "CIN",
+    team == "Cleveland Guardians" ~ "CLE",
+    team == "Cleveland Indians" ~ "CLE",  # Handle name change
+    team == "Colorado Rockies" ~ "COL",
+    team == "Detroit Tigers" ~ "DET",
+    team == "Houston Astros" ~ "HOU",
+    team == "Kansas City Royals" ~ "KCA",
+    team == "Los Angeles Angels" ~ "LAA",
+    team == "Los Angeles Dodgers" ~ "LAN",
+    team == "Miami Marlins" ~ "MIA",
+    team == "Milwaukee Brewers" ~ "MIL",
+    team == "Minnesota Twins" ~ "MIN",
+    team == "New York Mets" ~ "NYN",
+    team == "New York Yankees" ~ "NYA",
+    team == "Oakland Athletics" ~ "OAK",
+    team == "Philadelphia Phillies" ~ "PHI",
+    team == "Pittsburgh Pirates" ~ "PIT",
+    team == "San Diego Padres" ~ "SDN",
+    team == "San Francisco Giants" ~ "SFN",
+    team == "Seattle Mariners" ~ "SEA",
+    team == "St. Louis Cardinals" ~ "SLN",
+    team == "Tampa Bay Rays" ~ "TBA",
+    team == "Texas Rangers" ~ "TEX",
+    team == "Toronto Blue Jays" ~ "TOR",
+    team == "Washington Nationals" ~ "WSN",
+    TRUE ~ "UNK"
+  )) %>%
+  # Create salary data in Lahman format (individual salaries for each team)
+  mutate(salary = team_payroll_numeric) %>%  # Total team payroll as "salary"
+  select(yearID = year, teamID, salary)
+
+# Create team statistics data in Lahman format
+recent_teams <- recent_data %>%
+  mutate(teamID = case_when(
+    team == "Arizona Diamondbacks" ~ "ARI",
+    team == "Atlanta Braves" ~ "ATL",
+    team == "Baltimore Orioles" ~ "BAL",
+    team == "Boston Red Sox" ~ "BOS",
+    team == "Chicago Cubs" ~ "CHN",
+    team == "Chicago White Sox" ~ "CHA",
+    team == "Cincinnati Reds" ~ "CIN",
+    team == "Cleveland Guardians" ~ "CLE",
+    team == "Cleveland Indians" ~ "CLE",
+    team == "Colorado Rockies" ~ "COL",
+    team == "Detroit Tigers" ~ "DET",
+    team == "Houston Astros" ~ "HOU",
+    team == "Kansas City Royals" ~ "KCA",
+    team == "Los Angeles Angels" ~ "LAA",
+    team == "Los Angeles Dodgers" ~ "LAN",
+    team == "Miami Marlins" ~ "MIA",
+    team == "Milwaukee Brewers" ~ "MIL",
+    team == "Minnesota Twins" ~ "MIN",
+    team == "New York Mets" ~ "NYN",
+    team == "New York Yankees" ~ "NYA",
+    team == "Oakland Athletics" ~ "OAK",
+    team == "Philadelphia Phillies" ~ "PHI",
+    team == "Pittsburgh Pirates" ~ "PIT",
+    team == "San Diego Padres" ~ "SDN",
+    team == "San Francisco Giants" ~ "SFN",
+    team == "Seattle Mariners" ~ "SEA",
+    team == "St. Louis Cardinals" ~ "SLN",
+    team == "Tampa Bay Rays" ~ "TBA",
+    team == "Texas Rangers" ~ "TEX",
+    team == "Toronto Blue Jays" ~ "TOR",
+    team == "Washington Nationals" ~ "WSN",
+    TRUE ~ "UNK"
+  )) %>%
+  mutate(lgID = ifelse(league == "AL", "AL", "NL")) %>%
+  select(yearID = year, lgID, teamID, name = team, W = w, L = l) %>%
+  # Add placeholder values for playoff results (you can update these if you have the data)
+  mutate(DivWin = "N", WCWin = "N", LgWin = "N", WSWin = "N")
+
+# Check the structure of both datasets
+cat("Lahman Salaries columns:", names(Salaries), "\n")
+cat("Recent data columns:", names(recent_data_clean), "\n")
+
+# Make sure both datasets have the same columns
+# Lahman Salaries has: yearID, teamID, lgID, playerID, salary
+# Our recent data has: yearID, teamID, salary
+# We need to add missing columns to recent_data_clean
+
+recent_data_clean <- recent_data_clean %>%
+  mutate(lgID = NA, playerID = "TEAM") %>%  # Add missing columns
+  select(yearID, teamID, lgID, playerID, salary)  # Reorder to match Lahman format
+
+# Combine historical and recent salary data
+Salaries_combined <- rbind(Salaries, recent_data_clean)
+
+# Check the structure of both team datasets
+cat("Lahman Teams columns:", names(Teams), "\n")
+cat("Recent teams columns:", names(recent_teams), "\n")
+
+# The issue is that we need to make sure the column names exactly match
+# Let's check what columns actually exist in the original Teams data
+# and make sure our recent_teams has the same structure
+
+# Make sure recent_teams has exactly the same columns as Teams
+recent_teams <- recent_teams %>%
+  select(yearID, lgID, teamID, name, W, L, DivWin, WCWin, LgWin, WSWin)
+
+# Now combine them
+Teams_combined <- rbind(Teams, recent_teams)
+
+# Recalculate payroll with combined data
+payroll_combined <- Salaries_combined %>%
+  group_by(teamID, yearID) %>%
+  summarise(payroll = sum(salary)/1000000)
+
+# Merge with combined team data
+payroll_final <- merge(payroll_combined, Teams_combined[,c("yearID", "teamID","name", "W", "L", "DivWin", "WCWin", "LgWin","WSWin")], 
+                      by=c("yearID", "teamID"))
+
+# Display summary
+cat("Combined dataset includes data from", min(payroll_final$yearID), "to", max(payroll_final$yearID), "\n")
+cat("Total observations:", nrow(payroll_final), "\n")
+head(payroll_final)
+```
+
+```{r}
+# Analysis with the combined dataset
+payroll_final_clean <- payroll_final %>%
+  filter(!is.na(payroll) & !is.na(W)) %>%
+  mutate(win_pct = W / (W + L))
+
+# Calculate correlation between payroll and winning percentage
+correlation <- cor(payroll_final_clean$payroll, payroll_final_clean$win_pct, use = "complete.obs")
+cat("Correlation between payroll and winning percentage:", round(correlation, 3), "\n")
+
+# Create visualization
+ggplot(payroll_final_clean, aes(x = payroll, y = win_pct)) +
+  geom_point(alpha = 0.6, aes(color = yearID)) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(title = "MLB Payroll vs Winning Percentage (1985-2024)",
+       subtitle = paste("Correlation:", round(correlation, 3)),
+       x = "Payroll (Millions $)",
+       y = "Winning Percentage",
+       color = "Year") +
+  theme_minimal() +
+  scale_color_gradient(low = "blue", high = "red")
+
+# Summary statistics by year range
+cat("\nSummary by time period:\n")
+historical <- payroll_final_clean %>% filter(yearID <= 2016)
+recent <- payroll_final_clean %>% filter(yearID > 2016)
+
+cat("Historical period (1985-2016):\n")
+cat("  Average payroll:", round(mean(historical$payroll), 1), "million\n")
+cat("  Correlation:", round(cor(historical$payroll, historical$win_pct), 3), "\n")
+
+cat("Recent period (2017-2024):\n")
+cat("  Average payroll:", round(mean(recent$payroll), 1), "million\n")
+cat("  Correlation:", round(cor(recent$payroll, recent$win_pct), 3), "\n")
+```
