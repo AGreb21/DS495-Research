@@ -11,6 +11,9 @@ library(Lahman)
 library(janitor)
 library(ggplot2)
 library(dplyr)
+library(broom)
+library(broom.mixed)
+library(car)
 ```
 
 ```{r}
@@ -95,7 +98,9 @@ recent_data_clean <- recent_data %>%
   )) %>%
   # Create salary data in Lahman format (individual salaries for each team)
   mutate(salary = team_payroll_numeric) %>%  # Total team payroll as "salary"
-  select(yearID = year, teamID, salary)
+  select(yearID = year, teamID, salary) %>%
+  group_by(yearID, teamID) %>%
+  summarise(salary = max(salary, na.rm = TRUE), .groups = "drop")
 
 # Create team statistics data in Lahman format
 recent_teams <- recent_data %>%
@@ -136,7 +141,19 @@ recent_teams <- recent_data %>%
   mutate(lgID = ifelse(league == "AL", "AL", "NL")) %>%
   select(yearID = year, lgID, teamID, name = team, W = w, L = l) %>%
   # Add placeholder values for playoff results (you can update these if you have the data)
-  mutate(DivWin = "N", WCWin = "N", LgWin = "N", WSWin = "N")
+  mutate(DivWin = "N", WCWin = "N", LgWin = "N", WSWin = "N") %>%
+  group_by(yearID, teamID) %>%
+  summarise(
+    lgID = dplyr::first(lgID),
+    name = dplyr::first(name),
+    W = dplyr::first(W),
+    L = dplyr::first(L),
+    DivWin = dplyr::first(DivWin),
+    WCWin = dplyr::first(WCWin),
+    LgWin = dplyr::first(LgWin),
+    WSWin = dplyr::first(WSWin),
+    .groups = "drop"
+  )
 
 # Check the structure of both datasets
 cat("Lahman Salaries columns:", names(Salaries), "\n")
@@ -151,8 +168,14 @@ recent_data_clean <- recent_data_clean %>%
   mutate(lgID = NA, playerID = "TEAM") %>%  # Add missing columns
   select(yearID, teamID, lgID, playerID, salary)  # Reorder to match Lahman format
 
-# Combine historical and recent salary data
-Salaries_combined <- rbind(Salaries, recent_data_clean)
+# Avoid overlap with Lahman years (use Lahman up to its max year, then recent)
+max_lahman_salary_year <- suppressWarnings(max(Salaries$yearID, na.rm = TRUE))
+Salaries_base <- Salaries %>% filter(yearID <= max_lahman_salary_year)
+
+# Combine historical and recent salary data (dedup by year/team)
+Salaries_combined <- dplyr::bind_rows(Salaries_base, recent_data_clean) %>%
+  group_by(yearID, teamID, lgID, playerID) %>%
+  summarise(salary = sum(salary, na.rm = TRUE), .groups = "drop")
 
 # Check the structure of both team datasets
 cat("Lahman Teams columns:", names(Teams), "\n")
@@ -166,8 +189,24 @@ cat("Recent teams columns:", names(recent_teams), "\n")
 recent_teams <- recent_teams %>%
   select(yearID, lgID, teamID, name, W, L, DivWin, WCWin, LgWin, WSWin)
 
-# Now combine them
-Teams_combined <- rbind(Teams, recent_teams)
+# Avoid overlap with Lahman years in Teams as well
+max_lahman_team_year <- suppressWarnings(max(Teams$yearID, na.rm = TRUE))
+Teams_base <- Teams %>% filter(yearID <= max_lahman_team_year)
+
+# Now combine and deduplicate by year/team
+Teams_combined <- dplyr::bind_rows(Teams_base, recent_teams) %>%
+  group_by(yearID, teamID) %>%
+  summarise(
+    lgID = dplyr::first(lgID),
+    name = dplyr::first(name),
+    W = dplyr::first(W),
+    L = dplyr::first(L),
+    DivWin = dplyr::first(DivWin),
+    WCWin = dplyr::first(WCWin),
+    LgWin = dplyr::first(LgWin),
+    WSWin = dplyr::first(WSWin),
+    .groups = "drop"
+  )
 
 # Recalculate payroll with combined data
 payroll_combined <- Salaries_combined %>%
@@ -218,4 +257,314 @@ cat("  Correlation:", round(cor(historical$payroll, historical$win_pct), 3), "\n
 cat("Recent period (2017-2024):\n")
 cat("  Average payroll:", round(mean(recent$payroll), 1), "million\n")
 cat("  Correlation:", round(cor(recent$payroll, recent$win_pct), 3), "\n")
+```
+
+```{r}
+# MODEL 1: Simple Linear Regression
+# Does payroll affect winning percentage?
+
+model1 <- lm(win_pct ~ payroll, data = payroll_final_clean)
+
+# Model summary
+cat("=== MODEL 1: Simple Linear Regression ===\n")
+print(summary(model1))
+
+# Interpret coefficients
+cat("\nInterpretation:\n")
+cat("- Intercept:", round(coef(model1)[1], 4), 
+    "(predicted win % for $0 payroll)\n")
+cat("- Payroll effect:", round(coef(model1)[2], 6), 
+    "(change in win % per $1M increase in payroll)\n")
+cat("- For every $10M increase in payroll, win % changes by:", 
+    round(coef(model1)[2] * 10, 4), "\n")
+
+# Calculate R-squared
+rsq <- summary(model1)$r.squared
+cat("- R-squared:", round(rsq, 4), 
+    "(" , round(rsq * 100, 2), "% of variance explained)\n")
+
+# Statistical significance
+p_value <- summary(model1)$coefficients[2, 4]
+cat("- P-value:", format(p_value, scientific = TRUE), "\n")
+
+if(p_value < 0.001) {
+  cat("  Result: HIGHLY SIGNIFICANT (p < 0.001)\n")
+} else if(p_value < 0.01) {
+  cat("  Result: SIGNIFICANT (p < 0.01)\n")
+} else if(p_value < 0.05) {
+  cat("  Result: SIGNIFICANT (p < 0.05)\n")
+} else {
+  cat("  Result: NOT SIGNIFICANT (p >= 0.05)\n")
+}
+
+# Model diagnostics
+cat("\n=== Model Diagnostics ===\n")
+cat("Residuals:\n")
+print(summary(residuals(model1)))
+```
+
+```{r}
+# MODEL 2: Diminishing Returns (Non-linear relationship)
+# Does spending have diminishing returns?
+
+# Add quadratic term
+model2 <- lm(win_pct ~ payroll + I(payroll^2), data = payroll_final_clean)
+
+cat("\n=== MODEL 2: Quadratic Model (Diminishing Returns) ===\n")
+print(summary(model2))
+
+# Compare models
+cat("\n=== Model Comparison ===\n")
+anova(model1, model2)
+
+# Check if quadratic term is significant
+p_quad <- summary(model2)$coefficients[3, 4]
+cat("\nQuadratic term p-value:", format(p_quad, scientific = TRUE), "\n")
+
+if(p_quad < 0.05) {
+  cat("Result: Significant diminishing returns effect!\n")
+  
+  # Calculate inflection point (maximum win % before diminishing returns)
+  coefs <- coef(model2)
+  inflection_point <- -coefs[2] / (2 * coefs[3])
+  cat("Inflection point at payroll of", round(inflection_point, 2), 
+      "million (win % starts decreasing beyond this point)\n")
+} else {
+  cat("Result: No significant diminishing returns effect\n")
+  cat("  Linear model is sufficient\n")
+}
+
+# Visualize both models
+ggplot(payroll_final_clean, aes(x = payroll, y = win_pct)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", formula = y ~ x, aes(color = "Linear"), 
+              linetype = "dashed") +
+  geom_smooth(method = "lm", formula = y ~ x + I(x^2), 
+              aes(color = "Quadratic"), linetype = "solid") +
+  labs(title = "Linear vs Quadratic Model Comparison",
+       x = "Payroll (Millions $)",
+       y = "Winning Percentage",
+       color = "Model") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+# MODEL 3: Time-based analysis
+# Has the relationship between payroll and success changed over time?
+
+# Create time periods
+payroll_final_clean <- payroll_final_clean %>%
+  mutate(
+    period = case_when(
+      yearID < 2000 ~ "Pre-2000",
+      yearID >= 2000 & yearID < 2010 ~ "2000s",
+      yearID >= 2010 & yearID < 2020 ~ "2010s",
+      yearID >= 2020 ~ "2020s"
+    )
+  )
+
+# Fit separate models by period
+models_by_period <- payroll_final_clean %>%
+  group_by(period) %>%
+  do(model = lm(win_pct ~ payroll, data = .))
+
+cat("\n=== MODEL 3: Payroll Effect by Time Period ===\n")
+for(i in 1:nrow(models_by_period)) {
+  period_name <- models_by_period$period[i]
+  model <- models_by_period$model[[i]]
+  
+  cat("\n", period_name, ":\n", sep = "")
+  cat("  Payroll coefficient:", round(coef(model)[2], 6), "\n")
+  cat("  P-value:", format(summary(model)$coefficients[2, 4], scientific = TRUE), "\n")
+  cat("  R-squared:", round(summary(model)$r.squared, 4), "\n")
+}
+
+# Visualize by period
+ggplot(payroll_final_clean, aes(x = payroll, y = win_pct, color = period)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = TRUE) +
+  facet_wrap(~ period, nrow = 2) +
+  labs(title = "Payroll vs Success by Time Period",
+       x = "Payroll (Millions $)",
+       y = "Winning Percentage",
+       color = "Period") +
+  theme_minimal()
+```
+
+```{r}
+# MODEL 4: Absolute wins analysis
+# Does payroll affect total wins (not just percentage)?
+
+model4 <- lm(W ~ payroll, data = payroll_final_clean)
+
+cat("\n=== MODEL 4: Payroll vs Total Wins ===\n")
+print(summary(model4))
+
+cat("\nInterpretation:\n")
+cat("- Payroll effect:", round(coef(model4)[2], 4), 
+    "wins per $1M increase in payroll\n")
+cat("- For every $10M increase in payroll, expect", 
+    round(coef(model4)[2] * 10, 2), "additional wins\n")
+
+# Compare with win percentage model
+cat("\n=== Comparison: Win % vs Total Wins ===\n")
+cat("Effect per $10M on win %:", round(coef(model1)[2] * 10, 4), "\n")
+cat("Effect per $10M on total wins:", round(coef(model4)[2] * 10, 2), "\n")
+```
+
+```{r}
+# MODEL 5: Playoff Success Analysis
+# Does payroll affect making the playoffs and winning championships?
+
+# Create binary success indicators
+payroll_final_clean <- payroll_final_clean %>%
+  mutate(
+    made_playoffs = as.numeric(DivWin == "Y" | WCWin == "Y" | LgWin == "Y" | WSWin == "Y"),
+    won_world_series = as.numeric(WSWin == "Y")
+  )
+
+# Logistic regression for playoffs
+model5_logistic <- glm(made_playoffs ~ payroll, 
+                       data = payroll_final_clean, 
+                       family = binomial())
+
+cat("\n=== MODEL 5: Logistic Regression - Making Playoffs ===\n")
+print(summary(model5_logistic))
+
+# Interpret odds ratio
+odds_ratio <- exp(coef(model5_logistic)[2])
+cat("\nOdds Ratio:", round(odds_ratio, 4), "\n")
+cat("- For each $1M increase in payroll, odds of making playoffs multiply by", 
+    round(odds_ratio, 4), "\n")
+
+# Calculate probability changes
+# At average payroll
+avg_payroll <- mean(payroll_final_clean$payroll, na.rm = TRUE)
+prob_at_avg <- predict(model5_logistic, 
+                       newdata = data.frame(payroll = avg_payroll), 
+                       type = "response")
+cat("\nAt average payroll ($", round(avg_payroll, 1), "M), playoff probability:", 
+    round(prob_at_avg, 4), "\n")
+
+# At +$50M
+prob_at_high <- predict(model5_logistic, 
+                        newdata = data.frame(payroll = avg_payroll + 50), 
+                        type = "response")
+cat("At $50M above average, playoff probability:", round(prob_at_high, 4), "\n")
+cat("Increase in probability:", round((prob_at_high - prob_at_avg) * 100, 2), "%\n")
+```
+
+```{r}
+# MODEL 6: Controlling for time
+# Does payroll matter even after controlling for year?
+
+model6 <- lm(win_pct ~ payroll + yearID, data = payroll_final_clean)
+
+cat("\n=== MODEL 6: Controlling for Year ===\n")
+print(summary(model6))
+
+# Compare with simple model
+cat("\n=== Model Comparison: With vs Without Year Control ===\n")
+cat("Without year control:\n")
+cat("  Payroll coefficient:", round(coef(model1)[2], 6), "\n")
+cat("  P-value:", format(summary(model1)$coefficients[2, 4], scientific = TRUE), "\n")
+
+cat("\nWith year control:\n")
+cat("  Payroll coefficient:", round(coef(model6)[2], 6), "\n")
+cat("  P-value:", format(summary(model6)$coefficients[2, 4], scientific = TRUE), "\n")
+cat("  Year effect:", round(coef(model6)[3], 6), "per year\n")
+```
+
+```{r}
+# SUMMARY VISUALIZATION AND INTERPRETATION
+# Create a comprehensive summary plot
+
+# Prepare data for visualization
+model_comparison <- data.frame(
+  Model = c("Linear\nR²", "Quadratic\nR²", "Time Periods\nR²", "Total Wins\nR²", "Logistic\nAIC"),
+  Value = c(
+    summary(model1)$r.squared,
+    summary(model2)$r.squared,
+    mean(sapply(1:nrow(models_by_period), 
+                function(i) summary(models_by_period$model[[i]])$r.squared)),
+    summary(model4)$r.squared,
+    AIC(model5_logistic)
+  )
+)
+
+# Create visualization
+p1 <- ggplot(payroll_final_clean, aes(x = payroll, y = win_pct)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(title = "Main Finding: Payroll vs Winning Percentage",
+       x = "Payroll (Millions $)",
+       y = "Winning Percentage") +
+  theme_minimal()
+
+# Payroll distribution
+p2 <- ggplot(payroll_final_clean, aes(x = payroll)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white") +
+  geom_vline(xintercept = mean(payroll_final_clean$payroll), 
+             color = "red", linetype = "dashed", size = 1) +
+  labs(title = "Distribution of Team Payrolls",
+       x = "Payroll (Millions $)",
+       y = "Frequency") +
+  annotate("text", x = mean(payroll_final_clean$payroll), 
+           y = max(table(cut(payroll_final_clean$payroll, 50))), 
+           label = paste("Mean:", round(mean(payroll_final_clean$payroll), 1), "M"),
+           hjust = -0.1, color = "red") +
+  theme_minimal()
+
+# Combine plots
+library(gridExtra)
+grid.arrange(p1, p2, ncol = 2)
+
+# Final summary
+cat("\n" , rep("=", 70), "\n", sep = "")
+cat("FINAL SUMMARY: DOES PAYROLL AFFECT WINNING?\n")
+cat(rep("=", 70), "\n\n", sep = "")
+
+cat("QUESTION 1: Does payroll affect winning?\n")
+if(p_value < 0.001) {
+  cat("ANSWER: YES, highly significantly (p < 0.001)\n")
+} else if(p_value < 0.05) {
+  cat("ANSWER: YES, significantly (p < 0.05)\n")
+} else {
+  cat("ANSWER: NO, not statistically significant\n")
+}
+
+cat("\nQUESTION 2: How much does it affect winning?\n")
+cat("ANSWER: Each $10M increase in payroll adds approximately", 
+    round(coef(model1)[2] * 10, 3), "to winning percentage\n")
+cat("     This translates to approximately", 
+    round(coef(model1)[2] * 10 * 162, 1), "additional wins per season\n")
+
+cat("\nQUESTION 3: How important is payroll relative to other factors?\n")
+cat("ANSWER: Payroll explains", round(rsq * 100, 1), 
+    "% of the variance in winning percentage\n")
+if(rsq < 0.1) {
+  cat("     This is a SMALL effect - most success is due to other factors\n")
+} else if(rsq < 0.25) {
+  cat("     This is a MODERATE effect - important but not dominant\n")
+} else {
+  cat("     This is a LARGE effect - payroll is very important\n")
+}
+
+cat("\nQUESTION 4: Does spending have diminishing returns?\n")
+if(p_quad < 0.05) {
+  cat("ANSWER: YES - there are diminishing returns to payroll spending\n")
+} else {
+  cat("ANSWER: NO - the relationship appears linear\n")
+  cat("     Additional spending continues to help at the same rate\n")
+}
+
+cat("\nQUESTION 5: How much does extra payroll help make the playoffs?\n")
+cat("ANSWER: Each $10M increase multiplies playoff odds by", 
+    round(odds_ratio^10, 3), "\n")
+prob_diff <- (prob_at_high - prob_at_avg) * 100
+cat("     $50M above average increases playoff probability by", 
+    round(prob_diff, 1), "%\n")
+
+cat("\n", rep("=", 70), "\n", sep = "")
 ```
