@@ -1,1 +1,2 @@
 # DS495
+This semester, for DS495, I created a research project on MLB payroll and its impact on team and organizational success.  My code is under the file MLB_Payroll.ipynb, and you should be able to follow along to replicate my research.  There are two data sets in this GitHub: mlb_payroll_1.csv has all of the payroll and team success data, and game_logs_raw.csv is a record of the last 15 years for every MLB team's games.  My final; poster is MLB Payroll Poster.pdf
